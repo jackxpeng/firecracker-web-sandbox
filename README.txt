@@ -102,3 +102,61 @@ You are now fully wired. Run this inside the MicroVM:
 
 ping google.com
 If you see packets returning, you have successfully bridged a completely isolated, hardware-virtualized sandbox out to the public internet!
+
+
+# Pre-configuring Guest Networking by baking the image
+
+The "Image Baking" Process
+Make sure your Rust proxy is stopped (Ctrl+C), and run these commands in your Mint terminal:
+
+1. Create a temporary folder and mount the virtual hard drive:
+
+Bash
+# This mounts the ext4 file as if it were a physical USB drive
+mkdir -p /tmp/guest-fs
+sudo mount rootfs.ext4 /tmp/guest-fs
+2. Inject the Alpine Network Configuration:
+Alpine Linux uses the /etc/network/interfaces file to configure networking on boot. We will write your static IP configuration directly into it.
+
+Bash
+sudo sh -c 'cat <<EOF > /tmp/guest-fs/etc/network/interfaces
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 172.16.0.2
+    netmask 255.255.255.0
+    gateway 172.16.0.1
+EOF'
+3. Inject the DNS Configuration:
+
+Bash
+sudo sh -c 'echo "nameserver 8.8.8.8" > /tmp/guest-fs/etc/resolv.conf'
+(Fallback: Because this is a hyper-minimal test image, its boot services might 
+be stripped. Just to be absolutely bulletproof, let's also append your manual 
+commands to the root user's login profile so they run the second you log in).
+
+Bash
+sudo sh -c 'echo "ip addr add 172.16.0.2/24 dev eth0 2>/dev/null" >> /tmp/guest-fs/root/.profile'
+sudo sh -c 'echo "ip link set eth0 up 2>/dev/null" >> /tmp/guest-fs/root/.profile'
+sudo sh -c 'echo "ip route add default via 172.16.0.1 dev eth0 2>/dev/null" >> /tmp/guest-fs/root/.profile'
+4. Unmount the drive (CRITICAL):
+If you boot Firecracker while the drive is still mounted to your host, it can 
+corrupt the filesystem.
+
+Bash
+sudo umount /tmp/guest-fs
+Test the Automation
+Run your orchestrator:
+
+Bash
+cargo run
+Log in as root (password: root).
+
+The instant you are at the prompt, type:
+
+Bash
+ping google.com
+It should start replying immediately without you having to configure a single 
+interface. You have officially baked a custom golden image!
