@@ -73,6 +73,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Ignition! Starting VM...");
 
+    // 3.5 Attach Network Interface
+    println!("Wiring up network interface...");
+    client
+        .put("http://localhost/network-interfaces/eth0")
+        .json(&serde_json::json!({
+            "iface_id": "eth0",
+            "guest_mac": "AA:FC:00:00:00:01",
+            "host_dev_name": "tap0"
+        }))
+        .send()
+        .await?;
+
     // 4. Start the VM
     client
         .put("http://localhost/actions")
