@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>MicroVM Console</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <style>
+      body { background-color: #000; margin: 0; padding: 20px; color: #fff; font-family: sans-serif; }
+      #terminal { width: 800px; height: 500px; border: 1px solid #333; }
+    </style>
+  </head>
+  <body>
+    <h2>SadServers Clone: Alpine Linux Sandbox</h2>
+    <div id="terminal"></div>
+
+    <script>
+      // 1. Initialize the terminal on the page
+      const term = new Terminal({ cursorBlink: true, theme: { background: '#1e1e1e' } });
+      term.open(document.getElementById('terminal'));
+      term.write('Connecting to Rust Backend...\r\n');
+
+      // 2. Open a WebSocket to your Rust server
+      const ws = new WebSocket(`ws://${location.host}/ws`);
+
+      ws.onopen = () => {
+          term.write('\x1b[32m[Connected to MicroVM Engine]\x1b[0m\r\n');
+      };
+
+      // 3. Shovel browser keystrokes -> Rust Backend
+      term.onData(data => {
+          if (ws.readyState === WebSocket.OPEN) {
+              ws.send(data);
+          }
+      });
+
+      // 4. Shovel Rust Backend output -> Browser Screen
+      ws.onmessage = evt => {
+          term.write(evt.data);
+      };
+
+      ws.onclose = () => term.write('\r\n\x1b[31m[Connection Closed]\x1b[0m\r\n');
+    </script>
+  </body>
+</html>
