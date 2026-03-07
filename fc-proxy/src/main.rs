@@ -90,7 +90,9 @@ async fn handle_socket(mut socket: WebSocket) {
             msg = socket.recv() => {
                 if let Some(Ok(Message::Text(text))) = msg {
                     if child_stdin.write_all(text.as_bytes()).await.is_err() { break; }
-                } else { break; } // Exit if browser closes
+                } else {
+                    println!("Browser closed");
+                    break; } // Exit if browser closes
             }
 
             // Shovel Firecracker -> Browser
@@ -99,7 +101,9 @@ async fn handle_socket(mut socket: WebSocket) {
                     if n == 0 { break; } // Exit if VM shuts down
                     let text = String::from_utf8_lossy(&buf[..n]).to_string();
                     if socket.send(Message::Text(text.into())).await.is_err() { break; }
-                } else { break; }
+                } else {
+                    println!("VM closed");
+                    break; }
             }
         }
     }
