@@ -30,8 +30,10 @@ Run the included download script to fetch the AWS-provided minimal Alpine test i
 ./download_kernel_and_fs.sh
 ```
 
-### 2. Configure Host Networking
-You need to create a TAP device and configure your host machine (e.g., Ubuntu/Mint) to route the VM's traffic using NAT. 
+### 2. Configure Host Networking (Optional)
+If you want your MicroVMs to have outbound internet access, you need to create a TAP device and configure your host machine to route the VM's traffic using NAT. 
+
+*(If you skip this step, the MicroVMs will still boot perfectly and have a fully functioning terminal, they just won't be able to reach the outside internet).*
 
 Run the following commands to configure the `tap0` interface:
 ```bash
