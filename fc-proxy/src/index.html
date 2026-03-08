@@ -1,44 +1,97 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <title>MicroVM Console</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
-    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
-    <style>
-      body { background-color: #000; margin: 0; padding: 20px; color: #fff; font-family: sans-serif; }
-      #terminal { width: 800px; height: 500px; border: 1px solid #333; }
-    </style>
-  </head>
-  <body>
-    <h2>SadServers Clone: Alpine Linux Sandbox</h2>
-    <div id="terminal"></div>
 
-    <script>
-      // 1. Initialize the terminal on the page
-      const term = new Terminal({ cursorBlink: true, theme: { background: '#1e1e1e' } });
-      term.open(document.getElementById('terminal'));
-      term.write('Connecting to Rust Backend...\r\n');
+<head>
+  <title>MicroVM Console</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <style>
+    /* Make sure the body takes up the whole screen without scrollbars */
+    body,
+    html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background-color: #000;
+      color: #fff;
+      font-family: sans-serif;
+      overflow: hidden;
+    }
 
-      // 2. Open a WebSocket to your Rust server
-      const ws = new WebSocket(`ws://${location.host}/ws`);
+    h2 {
+      padding-left: 20px;
+      margin-top: 20px;
+      margin-bottom: 20px;
+    }
 
-      ws.onopen = () => {
-          term.write('\x1b[32m[Connected to MicroVM Engine]\x1b[0m\r\n');
-      };
+    /* Make the terminal container fill the available space */
+    #terminal {
+      width: 100vw;
+      height: calc(100vh - 80px);
+      /* Leave a little room for your title */
+    }
+  </style>
+</head>
 
-      // 3. Shovel browser keystrokes -> Rust Backend
-      term.onData(data => {
-          if (ws.readyState === WebSocket.OPEN) {
-              ws.send(data);
-          }
+<body>
+  <h2>SadServers Clone: Alpine Linux Sandbox</h2>
+  <div id="terminal"></div>
+
+  <script>
+    // 1. Initialize the terminal on the page
+    const term = new Terminal({ cursorBlink: true, theme: { background: '#1e1e1e' } });
+
+    // 2. Initialize and load the Fit Addon
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+
+    // 3. Open the terminal in your HTML element
+    term.open(document.getElementById('terminal'));
+
+    // 4. Force it to fit the container right away
+    fitAddon.fit();
+    term.write('Connecting to Rust Backend...\r\n');
+
+    // 2. Open a WebSocket to your Rust server
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+    ws.onopen = () => {
+      term.write('\x1b[32m[Connected to MicroVM Engine]\x1b[0m\r\n');
+    };
+
+    // 3. Shovel browser keystrokes -> Rust Backend
+    term.onData(data => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(data);
+      }
+    });
+
+    // 4. Shovel Rust Backend output -> Browser Screen
+    ws.onmessage = evt => {
+      term.write(evt.data);
+    };
+
+    // 5. Detect terminal resizes and send them to the backend
+    term.onResize((size) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+
+      const resizeMsg = JSON.stringify({
+        type: "resize",
+        cols: size.cols,
+        rows: size.rows
       });
+      ws.send(resizeMsg);
+    });
 
-      // 4. Shovel Rust Backend output -> Browser Screen
-      ws.onmessage = evt => {
-          term.write(evt.data);
-      };
+    ws.onclose = () => term.write('\r\n\x1b[31m[Connection Closed]\x1b[0m\r\n');
 
-      ws.onclose = () => term.write('\r\n\x1b[31m[Connection Closed]\x1b[0m\r\n');
-    </script>
-  </body>
+    // Listen for Chrome window resizes (This triggers xterm.js to recalculate)
+    window.addEventListener('resize', () => {
+      fitAddon.fit();
+    });
+  </script>
+</body>
+
 </html>

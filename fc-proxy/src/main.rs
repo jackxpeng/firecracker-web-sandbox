@@ -7,6 +7,7 @@ use axum::{
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
 use tokio::process::Command;
 use uuid::Uuid;
 
@@ -19,7 +20,7 @@ async fn main() {
 
     // 2. Start listening on port 3000
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("Web Server running! Open http://localhost:3000 in your browser.");
+    println!("Web Server running! Open http://[IP_ADDRESS] in your browser.");
 
     axum::serve(listener, app).await.unwrap();
 }
@@ -45,6 +46,7 @@ async fn handle_socket(mut socket: WebSocket) {
 
     // 2. Define unique paths for this specific VM
     let sock_path = format!("/tmp/firecracker-{}.socket", session_id);
+    let vsock_path = format!("/tmp/firecracker-{}.vsock", session_id);
     let rootfs_path = format!("/tmp/rootfs-{}.ext4", session_id);
 
     // 3. Ephemeral Storage: Clone the Golden Image
@@ -92,11 +94,37 @@ async fn handle_socket(mut socket: WebSocket) {
         .send()
         .await;
 
+    // Tell Firecracker to attach a Vsock device
+    let _ = client
+        .put("http://localhost/vsock")
+        .json(&serde_json::json!({
+            "guest_cid": 3,
+            "uds_path": &vsock_path
+        }))
+        .send()
+        .await;
+
     let _ = client
         .put("http://localhost/actions")
         .json(&serde_json::json!({ "action_type": "InstanceStart" }))
         .send()
         .await;
+
+    // Give Alpine a moment to boot and start the guest-agent service
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    // Connect to the Unix socket created by Firecracker
+    let mut vsock_stream = UnixStream::connect(&vsock_path)
+        .await
+        .expect("Failed to connect to vsock");
+
+    // The Firecracker Handshake: "Connect me to port 5000 on the guest"
+    vsock_stream.write_all(b"CONNECT 5000\n").await.unwrap();
+
+    // Read Firecracker's acknowledgment (usually "OK <host_port>\n")
+    let mut ack = [0; 32];
+    let _ = vsock_stream.read(&mut ack).await.unwrap();
+    println!("Vsock connection established!");
 
     // The Custom Web Multiplexer
     let mut buf = [0u8; 1024];
@@ -106,8 +134,20 @@ async fn handle_socket(mut socket: WebSocket) {
             // Shovel Browser -> Firecracker
             msg = socket.recv() => {
                 if let Some(Ok(Message::Text(text))) = msg {
-                    println!("[{}] Browser -> Firecracker: {:?}", session_id, text);
-                    if child_stdin.write_all(text.as_bytes()).await.is_err() { break; }
+                    if text.starts_with("{\"type\":\"resize\"") {
+                        // Route it through the Vsock to the guest agent
+                        if let Err(e) = vsock_stream.write_all(text.as_bytes()).await {
+                            eprintln!("Failed to send resize event: {}", e);
+                        }
+                        let _ = vsock_stream.flush().await;
+                    } else {
+                        // It's regular terminal typing, send it to standard input
+                        println!("[{}] Browser -> Firecracker: {:?}", session_id, text);
+                        if let Err(e) = child_stdin.write_all(text.as_bytes()).await {
+                            eprintln!("Failed to write to stdin: {}", e);
+                            break;
+                        }
+                    }
                 } else {
                     println!("Browser closed");
                     break; } // Exit if browser closes
