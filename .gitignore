@@ -1,1 +1,15 @@
+# Rust build artifacts
+target/
 guest-agent/target/
+fc-proxy/target/
+
+# Firecracker Binaries and Images
+firecracker
+rootfs.ext4
+vmlinux
+vmlinux-*
+
+# Temporary and socket files
+*.socket
+*.vsock
+/tmp/
