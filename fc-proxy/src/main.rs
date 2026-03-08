@@ -8,6 +8,7 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() {
@@ -35,14 +36,29 @@ async fn ws_handler(ws: WebSocketUpgrade) -> axum::response::Response {
 
 // The actual Orchestrator Logic
 async fn handle_socket(mut socket: WebSocket) {
-    println!("Browser connected! Spawning MicroVM...");
-    let _ = std::fs::remove_file("/tmp/firecracker.socket");
+    // 1. Generate a unique Session ID
+    let session_id = Uuid::new_v4().to_string();
+    println!(
+        "Browser connected! Starting MicroVM with Session ID: {}",
+        session_id
+    );
 
-    // Spawn Firecracker
+    // 2. Define unique paths for this specific VM
+    let sock_path = format!("/tmp/firecracker-{}.socket", session_id);
+    let rootfs_path = format!("/tmp/rootfs-{}.ext4", session_id);
+
+    // 3. Ephemeral Storage: Clone the Golden Image
+    // We copy the parent directory to the /tmp directory
+    print!("[{}] Clonging Golden Image...", session_id);
+    tokio::fs::copy("../rootfs.ext4", &rootfs_path)
+        .await
+        .expect("Failed to copy rootfs");
+
+    // 4. Spawn Firecracker
     let mut child = Command::new("./firecracker")
         .current_dir("..")
         .arg("--api-sock")
-        .arg("/tmp/firecracker.socket")
+        .arg(&sock_path)
         .arg("--enable-pci")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -54,17 +70,18 @@ async fn handle_socket(mut socket: WebSocket) {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // API Configuration
+    // 5. API Configuration
     let client = reqwest::Client::builder()
-        .unix_socket("/tmp/firecracker.socket")
+        .unix_socket(sock_path.as_str())
         .build()
         .unwrap();
 
     let _ = client.put("http://localhost/boot-source")
         .json(&serde_json::json!({ "kernel_image_path": "vmlinux", "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda" })).send().await;
 
+    // Attach the UNIQUE hard drive clone, not the original!
     let _ = client.put("http://localhost/drives/rootfs")
-        .json(&serde_json::json!({ "drive_id": "rootfs", "path_on_host": "rootfs.ext4", "is_root_device": true, "is_read_only": false })).send().await;
+        .json(&serde_json::json!({ "drive_id": "rootfs", "path_on_host": &rootfs_path, "is_root_device": true, "is_read_only": false })).send().await;
 
     let _ = client.put("http://localhost/network-interfaces/eth0")
         .json(&serde_json::json!({ "iface_id": "eth0", "guest_mac": "AA:FC:00:00:00:01", "host_dev_name": "tap0" })).send().await;
@@ -89,6 +106,7 @@ async fn handle_socket(mut socket: WebSocket) {
             // Shovel Browser -> Firecracker
             msg = socket.recv() => {
                 if let Some(Ok(Message::Text(text))) = msg {
+                    println!("[{}] Browser -> Firecracker: {:?}", session_id, text);
                     if child_stdin.write_all(text.as_bytes()).await.is_err() { break; }
                 } else {
                     println!("Browser closed");
@@ -100,6 +118,7 @@ async fn handle_socket(mut socket: WebSocket) {
                 if let Ok(n) = bytes_read {
                     if n == 0 { break; } // Exit if VM shuts down
                     let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                    println!("[{}] Firecracker -> Browser: {:?}", session_id, text);
                     if socket.send(Message::Text(text.into())).await.is_err() { break; }
                 } else {
                     println!("VM closed");
@@ -108,6 +127,8 @@ async fn handle_socket(mut socket: WebSocket) {
         }
     }
 
-    println!("Session ended. Killing MicroVM...");
+    println!("[{}] Session ended. Clearning up resources...", session_id);
     let _ = child.kill().await;
+    let _ = tokio::fs::remove_file(&rootfs_path).await;
+    let _ = tokio::fs::remove_file(&sock_path).await;
 }

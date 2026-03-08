@@ -23,17 +23,19 @@ curl -L https://s3.amazonaws.com/spec.ccfc.min/img/hello/kernel/hello-vmlinux.bi
 # Download the Alpine filesystem
 curl -L https://s3.amazonaws.com/spec.ccfc.min/img/hello/fsfiles/hello-rootfs.ext4 -o rootfs.ext4
 Phase 2: The Rust Orchestrator (fc-proxy)
-Instead of interacting with Firecracker directly, we wrote a Rust program to act as an orchestrator. It spawns Firecracker as a background child process and asynchronously "shovels" bytes between the host terminal and the guest VM's serial port.
+Instead of interacting with Firecracker directly, we wrote a Rust program to act as a web-based orchestrator. Once launched, it serves an Axum web interface that allows users to interact with a newly spawned Firecracker MicroVM directly from their browser using WebSockets.
 
 Project Setup:
 
 Bash
 cargo new fc-proxy
 cd fc-proxy
+cargo add axum --features ws
+cargo add reqwest --features json
+cargo add serde_json
 cargo add tokio --features full
-cargo add crossterm
 The Code (src/main.rs):
-    This code handles process creation, pipe capture, terminal raw mode (to prevent double-echoing and interpret special keystrokes correctly), and multiplexed I/O.
+    This code handles launching the Axum web server, spawning Firecracker processes, capturing pipes, and tunneling the serial console text over WebSockets to a browser-based UI.
 
 3-step blueprint to get your MicroVM online.
 
@@ -68,19 +70,20 @@ Open your fc-proxy/src/main.rs file. Right before your InstanceStart API call
 (and after the machine-config call), add this new HTTP request:
 
 Rust
-    // 3.5 Attach Network Interface
-    println!("Wiring up network interface...");
-    client.put("http://localhost/network-interfaces/eth0")
+    let _ = client.put("http://localhost/network-interfaces/eth0")
         .json(&serde_json::json!({
             "iface_id": "eth0",
             "guest_mac": "AA:FC:00:00:00:01",
             "host_dev_name": "tap0"
         }))
-        .send().await?;
+        .send().await;
 Step 3: Configure Alpine Linux (Guest Setup)
-Run your orchestrator with cargo run.
+Run your orchestrator:
 
-Once the Alpine MicroVM boots up and drops you at the localhost:~# prompt, the 
+Bash
+cargo run
+
+Open http://localhost:3000 in your web browser. This will trigger the proxy to spawn a MicroVM and connect you. Once the Alpine MicroVM boots up and drops you at the localhost:~# prompt, the 
 virtual hardware is connected, but Alpine doesn't know its IP address yet 
 (we aren't running a DHCP server). We have to set it manually.
 
@@ -152,7 +155,8 @@ Run your orchestrator:
 
 Bash
 cargo run
-Log in as root (password: root).
+
+Open http://localhost:3000 in your browser and log in as root (password: root).
 
 The instant you are at the prompt, type:
 
