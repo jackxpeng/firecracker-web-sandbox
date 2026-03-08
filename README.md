@@ -55,9 +55,13 @@ cargo run
 ```
 
 ### 4. Connect
-Open your browser and navigate to:
+Open your browser and navigate to the orchestrator. If running locally:
 ```
 http://localhost:3000
+```
+If you deployed this to a remote cloud server, use your server's public IP address:
+```
+http://[YOUR_SERVER_IP]:3000
 ```
 Login with the username `root` and password `root`. 
 You can type `ping google.com` to verify internet connectivity, or run `top` and resize your browser window to watch the terminal dynamically adapt!
