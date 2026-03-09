@@ -5,11 +5,15 @@ use axum::{
     routing::get,
 };
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::process::Command;
+use tun_tap::{Iface, Mode};
 use uuid::Uuid;
+
+static NEXT_TAP_ID: AtomicUsize = AtomicUsize::new(1);
 
 #[tokio::main]
 async fn main() {
@@ -78,15 +82,35 @@ async fn handle_socket(mut socket: WebSocket) {
         .build()
         .unwrap();
 
-    let _ = client.put("http://localhost/boot-source")
-        .json(&serde_json::json!({ "kernel_image_path": "vmlinux", "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda" })).send().await;
+    // --- New Dynamic Networking Block ---
+    let tap_id = NEXT_TAP_ID.fetch_add(1, Ordering::SeqCst);
+    let tap_name = setup_dynamic_tap(tap_id).await.unwrap();
+    let guest_mac = format!("AA:FC:00:00:00:{:02x}", (tap_id % 254) + 1);
+
+    // Create the dynamic boot arguments containing our specific IPs for this session
+    let boot_args = format!(
+        "console=ttyS0 reboot=k panic=1 root=/dev/vda fc_ip=10.200.{}.2 fc_gw=10.200.{}.1",
+        tap_id, tap_id
+    );
+
+    let _ = client
+        .put("http://localhost/boot-source")
+        .json(&serde_json::json!({ "kernel_image_path": "vmlinux", "boot_args": boot_args}))
+        .send()
+        .await;
 
     // Attach the UNIQUE hard drive clone, not the original!
     let _ = client.put("http://localhost/drives/rootfs")
         .json(&serde_json::json!({ "drive_id": "rootfs", "path_on_host": &rootfs_path, "is_root_device": true, "is_read_only": false })).send().await;
 
-    let _ = client.put("http://localhost/network-interfaces/eth0")
-        .json(&serde_json::json!({ "iface_id": "eth0", "guest_mac": "AA:FC:00:00:00:01", "host_dev_name": "tap0" })).send().await;
+    let net_res = client.put("http://localhost/network-interfaces/eth0")
+        .json(&serde_json::json!({ "iface_id": "eth0", "guest_mac": guest_mac, "host_dev_name": tap_name}))
+        .send().await.expect("Failed to attach network interface");
+
+    if !net_res.status().is_success() {
+        let error_text = net_res.text().await.unwrap();
+        panic!("Failed to attach network interface: {}", error_text);
+    }
 
     let _ = client
         .put("http://localhost/machine-config")
@@ -171,4 +195,35 @@ async fn handle_socket(mut socket: WebSocket) {
     let _ = child.kill().await;
     let _ = tokio::fs::remove_file(&rootfs_path).await;
     let _ = tokio::fs::remove_file(&sock_path).await;
+    let _ = Command::new("sudo")
+        .args(&["ip", "link", "delete", &tap_name])
+        .output()
+        .await;
+}
+
+/// Dynamically creates and configures a TAP interface.
+/// CRITICAL: Returns the Iface object so you can keep the interface alive!
+async fn setup_dynamic_tap(tap_id: usize) -> Result<String, Box<dyn std::error::Error>> {
+    let tap_name = format!("fctap{}", tap_id);
+    let host_ip = format!("10.200.{}.1/30", tap_id);
+
+    // 1. Create the TAP using sudo (This handles the permissions for us)
+    Command::new("sudo")
+        .args(&["ip", "tuntap", "add", "dev", &tap_name, "mode", "tap"])
+        .output()
+        .await?;
+
+    // 2. Configure IP
+    Command::new("sudo")
+        .args(&["ip", "addr", "add", &host_ip, "dev", &tap_name])
+        .output()
+        .await?;
+
+    // 3. Turn it on
+    Command::new("sudo")
+        .args(&["ip", "link", "set", &tap_name, "up"])
+        .output()
+        .await?;
+
+    Ok(tap_name)
 }
